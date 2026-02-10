@@ -66,12 +66,17 @@ cola = st.sidebar.slider("COLA (%)", 0.0, 5.0, 2.5)
 st.sidebar.subheader("Portfolio Accounts")
 tax_deferred_start = st.sidebar.number_input("Tax-Deferred (401k / IRA)", value=100000)
 taxable_start = st.sidebar.number_input("Taxable Brokerage (Stocks)", value=100000)
+
+# NEW — Emergency Cash
+st.sidebar.subheader("Emergency Cash")
+emergency_cash = st.sidebar.number_input("Emergency Cash Available", value=25000)
+
 expected_return = st.sidebar.slider("Expected Return (%)", 0.0, 12.0, 5.0)
 volatility = st.sidebar.slider("Volatility (%)", 0.0, 25.0, 10.0)
 tax_rate = st.sidebar.slider("Tax Rate (%)", 0.0, 30.0, 12.0)
 mc_runs = st.sidebar.number_input("Monte Carlo Runs", value=1000)
 
-# RMD & Roth (Roth not yet modeled, but kept for future use)
+# RMD & Roth
 st.sidebar.subheader("RMD & Roth")
 reinvest_rmd = st.sidebar.checkbox("Reinvest RMD?", value=True)
 roth_conversion = st.sidebar.number_input("Optional Roth Conversion Amount", value=0)
@@ -102,6 +107,7 @@ years = end_age - start_age
 def run_single_path_with_projection(
     tax_deferred_start,
     taxable_start,
+    emergency_cash,   # NEW
     start_year,
     start_age_you,
     start_age_spouse,
@@ -171,21 +177,21 @@ def run_single_path_with_projection(
             interest_component = 0.0
             principal_component = 0.0
 
-        # Apply market return to both accounts
+        # Apply market return
         r = np.random.normal(monthly_return_mean, monthly_vol)
         tax_deferred_balance *= 1 + r
         taxable_balance *= 1 + r
 
-        # Social Security: only after start age
+        # Social Security
         if age_you >= ss_start_age:
             gross_ss = ss_current
         else:
             gross_ss = 0.0
 
-        # Needed withdrawal from portfolio (monthly)
+        # Needed withdrawal
         needed_withdrawal = max(0.0, target_income - gross_ss)
 
-        # RMD only from tax-deferred
+        # RMD
         if age_you >= 73:
             annual_rmd = tax_deferred_balance * rmd_rate
             rmd_monthly = annual_rmd / 12
@@ -197,12 +203,12 @@ def run_single_path_with_projection(
         withdrawal_from_taxable = min(needed_withdrawal, taxable_balance)
         remaining_need = needed_withdrawal - withdrawal_from_taxable
 
-        # Then from tax-deferred, at least RMD
+        # Then tax-deferred
         withdrawal_from_tax_deferred = max(remaining_need, rmd_monthly)
         if withdrawal_from_tax_deferred > tax_deferred_balance:
             withdrawal_from_tax_deferred = tax_deferred_balance
 
-        # Taxes (simplified: SS + withdrawals taxed at effective rate)
+        # Taxes
         taxable_income = (
             0.85 * gross_ss
             + withdrawal_from_tax_deferred
@@ -210,26 +216,18 @@ def run_single_path_with_projection(
         )
         taxes = taxable_income * effective_tax_rate
 
-        # Apply withdrawals to balances
+        # Apply withdrawals
         tax_deferred_balance -= withdrawal_from_tax_deferred
-        if tax_deferred_balance < 0:
-            tax_deferred_balance = 0.0
-
         taxable_balance -= withdrawal_from_taxable
-        if taxable_balance < 0:
-            taxable_balance = 0.0
 
-        # Reinvest excess RMD into taxable (if RMD > remaining_need)
+        # Reinvest excess RMD
         excess_rmd = max(0.0, withdrawal_from_tax_deferred - remaining_need)
         if reinvest_excess_rmd and excess_rmd > 0:
             taxable_balance += excess_rmd
 
-        # Apply COLA only in January AFTER claiming
+        # COLA
         if month_in_year == 0 and age_you > ss_start_age:
             ss_current *= (1 + monthly_cola)
-
-        # Optionally inflate target income (kept flat here)
-        # target_income *= 1 + monthly_inflation
 
         if month_in_year == 11:
             home_equity = home_value_local - mortgage_balance_local
@@ -252,29 +250,33 @@ def run_single_path_with_projection(
                     "Withdrawal_Annual": (withdrawal_from_tax_deferred + withdrawal_from_taxable) * 12,
                     "Tax_Deferred_End": tax_deferred_balance,
                     "Taxable_Account_End": taxable_balance,
+                    "Emergency_Cash": emergency_cash,  # NEW
                     "Portfolio_Total": tax_deferred_balance + taxable_balance,
                     "Home_Value": home_value_local,
                     "Mortgage_Balance": mortgage_balance_local,
                     "Home_Equity": home_equity,
                     "Total_Wealth": tax_deferred_balance
                     + taxable_balance
-                    + home_equity,
+                    + home_equity
+                    + emergency_cash,  # NEW
                 }
             )
 
     return pd.DataFrame(yearly_rows)
 
 
-def monte_carlo_retirement_engine(simulations=1000, **kwargs):
+def monte_carlo_retirement_engine(simulations=1000, emergency_cash=0, **kwargs):
     final_balances = []
     success_count = 0
 
     for _ in range(simulations):
-        projection = run_single_path_with_projection(random_seed=None, **kwargs)
+        projection = run_single_path_with_projection(
+            emergency_cash=emergency_cash,
+            **kwargs
+        )
         final_balance = projection["Total_Wealth"].iloc[-1]
         final_balances.append(final_balance)
 
-        # Simple success definition: tax-deferred not exhausted
         if (projection["Tax_Deferred_End"] > 0).all():
             success_count += 1
 
@@ -288,6 +290,7 @@ def monte_carlo_retirement_engine(simulations=1000, **kwargs):
 def run_simulation():
     df_mc, success_rate = monte_carlo_retirement_engine(
         simulations=mc_runs,
+        emergency_cash=emergency_cash,  # NEW
         tax_deferred_start=tax_deferred_start,
         taxable_start=taxable_start,
         start_year=2026,
@@ -315,6 +318,7 @@ def run_simulation():
     projection_df = run_single_path_with_projection(
         tax_deferred_start=tax_deferred_start,
         taxable_start=taxable_start,
+        emergency_cash=emergency_cash,  # NEW
         start_year=2026,
         start_age_you=start_age,
         start_age_spouse=start_age - 1,
@@ -354,7 +358,7 @@ df, df_mc, success_rate, mortgage_payoff_year = run_simulation()
 # ---------------------------------------------------------
 # SUMMARY CARDS
 # ---------------------------------------------------------
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 col1.metric("Success Rate", f"{success_rate*100:.1f}%")
 col2.metric("Final Wealth (Median)", f"${df_mc['Final Balance'].median():,.0f}")
@@ -362,9 +366,8 @@ col3.metric(
     "Mortgage Payoff Year",
     f"{mortgage_payoff_year if mortgage_payoff_year is not None else 'N/A'}",
 )
-col4.metric("SS Covers All Needs At Age", "—")
+col4.metric("Emergency Cash", f"${emergency_cash:,.0f}")  # NEW
 
-col5 = st.columns(5)[4]
 final_td = df["Tax_Deferred_End"].iloc[-1]
 final_taxable = df["Taxable_Account_End"].iloc[-1]
 final_portfolio = final_td + final_taxable
@@ -392,6 +395,7 @@ def style_projection_table(df_in):
         "Total_Wealth",
         "Total_Cash_Need_Annual",
         "SS_Coverage_Gap",
+        "Emergency_Cash",  # NEW
     ]
 
     for col in dollar_cols:
@@ -432,21 +436,17 @@ ax.plot(
 )
 ax.plot(
     df["Year"],
-    df["Tax_Deferred_End"] + df["Taxable_Account_End"],
-    label="Total Portfolio",
-    linewidth=1.5,
-    linestyle="--",
-)
-
-ax.plot(
-    df["Year"],
     df["Portfolio_Total"],
     label="Portfolio Total",
     linewidth=1.5,
-    linestyle=":",
+    linestyle="--",
 )
-
-ax.plot(df["Year"], df["Total_Wealth"], label="Total Wealth", linewidth=1.5)
+ax.plot(
+    df["Year"],
+    df["Total_Wealth"],
+    label="Total Wealth",
+    linewidth=1.5,
+)
 
 ax.set_title("Total Wealth Over Time", fontsize=6, fontweight="bold")
 ax.set_xlabel("Year", fontsize=6, fontweight="bold")
